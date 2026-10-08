@@ -39,8 +39,14 @@
   .brand-name{line-height:1.15;}
   .brand-red{color:#D9433A;}
   .brand-white{color:var(--ink);}
-  .sync-box{margin-top:auto; padding:16px 22px; border-top:1px solid var(--line);}
-  .sync-label{display:block; font-size:11px; color:var(--muted); margin-bottom:8px;}
+  .sync-footer{margin-top:40px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);}
+  .sync-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  .sync-id b{font-family:var(--font-mono); font-weight:500; color:var(--ink);}
+  .sync-btn{all:unset; cursor:pointer; font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:3px; color:var(--muted);}
+  .sync-btn:hover{color:var(--ink); background:rgba(255,255,255,0.03);}
+  .sync-btn:focus-visible{outline:2px solid var(--gold); outline-offset:1px;}
+  .sync-help{width:22px; height:22px; padding:0; text-align:center; line-height:22px; border-radius:50%;}
+  .sync-desc{margin:10px 0 0; line-height:1.5; max-width:520px;}
   .brand span{color:var(--gold);}
   nav.spine button{
     all:unset; cursor:pointer; padding:14px 22px; font-family:var(--font-body);
@@ -147,8 +153,7 @@
     .brand-logo{width:28px; height:28px;}
     nav.spine button{padding:8px 14px; border-left:none; border-bottom:2px solid transparent;}
     nav.spine button.active{border-bottom-color:var(--gold); border-left-color:transparent;}
-    .sync-box{flex:1 1 100%; margin-top:4px; padding:10px 4px 0; border-top:none; display:flex; align-items:center; justify-content:space-between;}
-    main{padding:24px 18px;}
+      main{padding:24px 18px;}
   }
 </style>
 </head>
@@ -162,10 +167,6 @@
     <button data-tab="salary" class="active">Зарплата</button>
     <button data-tab="finance">Финансы</button>
     <button data-tab="archive">Архив</button>
-    <div class="sync-box">
-      <span class="sync-label">Персональная ссылка</span>
-      <button class="btn secondary" id="copySyncLink" style="font-size:11px; padding:6px 10px;">Скопировать</button>
-    </div>
   </nav>
   <main>
 
@@ -317,6 +318,19 @@
       </div>
       <p class="empty" id="archiveEmpty">Пока нет сохранённых месяцев.</p>
     </section>
+
+    <footer class="sync-footer">
+      <div class="sync-row">
+        <span class="sync-id">ID: <b id="syncId"></b></span>
+        <button class="sync-btn" id="copySyncLink">Скопировать ссылку</button>
+        <button class="sync-btn sync-help" id="syncHelpBtn" aria-label="Для чего это нужно" aria-expanded="false">?</button>
+      </div>
+      <p class="sync-desc" id="syncDesc" hidden>
+        Это ваш личный ID вместо логина и пароля. Данные сохраняются в облаке под этим ID.
+        Если открыть персональную ссылку на новом телефоне или после очистки браузера, ваши смены, расходы и архив подтянутся обратно.
+        Никому не отправляйте эту ссылку: кто её знает, увидит ваши данные.
+      </p>
+    </footer>
 
   </main>
 </div>
@@ -838,6 +852,14 @@ document.getElementById('archiveMonth').addEventListener('click', ()=>{
 });
 
 renderArchive();
+
+
+document.getElementById('syncId').textContent = USER_ID;
+document.getElementById('syncHelpBtn').addEventListener('click', ()=>{
+  const d = document.getElementById('syncDesc');
+  d.hidden = !d.hidden;
+  document.getElementById('syncHelpBtn').setAttribute('aria-expanded', String(!d.hidden));
+});
 
 document.getElementById('copySyncLink').addEventListener('click', async ()=>{
   const url = `${location.origin}${location.pathname}?uid=${encodeURIComponent(USER_ID)}`;
