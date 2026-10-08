@@ -238,6 +238,26 @@
         <button class="btn secondary" id="pushRemainder">Учесть остаток как доход</button>
         <button class="btn secondary" id="pushActual">Учесть ЗП по факту как доход</button>
       </div>
+
+      <fieldset style="margin-top:28px;">
+        <legend>Подработки</legend>
+        <div class="row">
+          <div class="field" style="max-width:140px;"><label for="sjAmount">Заработано, ₽</label><input id="sjAmount" type="number" min="0" step="1"></div>
+          <div class="field" style="flex:2;"><label for="sjSource">Откуда</label><input id="sjSource" type="text" placeholder="например, частный заказ"></div>
+        </div>
+        <button class="btn" id="addSideJob">Добавить</button>
+        <div id="sideJobList" style="margin-top:14px;"></div>
+        <div class="total-line" id="sideJobTotalLine" style="display:none; padding-top:12px;">
+          <span class="label">Подработки за месяц</span>
+          <span class="value" id="sideJobTotal">0 ₽</span>
+        </div>
+        <button class="btn secondary" id="pushSideJobs" style="display:none;">Учесть подработки как доход</button>
+      </fieldset>
+
+      <div class="total-line" id="combinedLine" style="display:none;">
+        <span class="label">Основная работа + подработки</span>
+        <span class="value" id="combinedTotal">0 ₽</span>
+      </div>
     </section>
 
     <section id="tab-finance" style="display:none;">
@@ -312,7 +332,7 @@
       <p class="sub">Сохранённые итоги по месяцам: смены, часы и суммы к получению.</p>
       <div class="overflow">
         <table id="archiveTable">
-          <thead><tr><th>Месяц</th><th class="num">Смен</th><th class="num">Часов</th><th class="num">Итого с KPI</th><th class="num">Факт получено</th><th></th></tr></thead>
+          <thead><tr><th>Месяц</th><th class="num">Смен</th><th class="num">Часов</th><th class="num">Итого с KPI</th><th class="num">Подработки</th><th class="num">Факт получено</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -469,6 +489,7 @@ function renderSalary(){
   renderSalary.lastTotal = total;
   updateRemainder(total);
   renderCalendar();
+  renderSideJobs();
   return total;
 }
 
@@ -487,14 +508,71 @@ kpiEnabledEl.addEventListener('change', ()=>{
   renderSalary();
 });
 
+// --- Side jobs ---
+let sideJobs = load('ledger.sideJobs', []);
+if(!Array.isArray(sideJobs)) sideJobs = [];
+
+function currentMonthSideJobs(){
+  const prefix = monthKeyPrefix();
+  return sideJobs.filter(j=>j.date.startsWith(prefix));
+}
+
+function renderSideJobs(){
+  const items = currentMonthSideJobs().sort((a,b)=> a.date < b.date ? 1 : -1);
+  const list = document.getElementById('sideJobList');
+  list.innerHTML = '';
+  items.forEach(j=>{
+    const row = document.createElement('div');
+    row.className = 'rec-row';
+    const d = j.date.split('-');
+    row.innerHTML = `<span class="rec-name"></span><span class="rec-day">${d[2]}.${d[1]}</span><span class="rec-amount">${money(j.amount)}</span><button class="del" data-id="${j.id}" title="Удалить">×</button>`;
+    row.querySelector('.rec-name').textContent = j.source || '—';
+    list.appendChild(row);
+  });
+  const total = items.reduce((s,j)=>s+j.amount, 0);
+  const has = items.length > 0;
+  document.getElementById('sideJobTotal').textContent = money(total);
+  document.getElementById('sideJobTotalLine').style.display = has ? '' : 'none';
+  document.getElementById('pushSideJobs').style.display = has ? '' : 'none';
+  document.getElementById('combinedLine').style.display = has ? '' : 'none';
+  document.getElementById('combinedTotal').textContent = money((renderSalary.lastTotal ?? 0) + total);
+}
+
+document.getElementById('addSideJob').addEventListener('click', ()=>{
+  const amount = parseFloat(document.getElementById('sjAmount').value);
+  const source = document.getElementById('sjSource').value.trim();
+  if(!amount || amount <= 0) return;
+  const prefix = monthKeyPrefix();
+  const today = todayStr();
+  const date = today.startsWith(prefix) ? today : `${prefix}-01`;
+  sideJobs.push({id: Date.now(), date, amount, source});
+  save('ledger.sideJobs', sideJobs);
+  document.getElementById('sjAmount').value = '';
+  document.getElementById('sjSource').value = '';
+  renderSideJobs();
+});
+
+document.getElementById('sideJobList').addEventListener('click', e=>{
+  if(e.target.classList.contains('del')){
+    const id = Number(e.target.dataset.id);
+    sideJobs = sideJobs.filter(j=>j.id!==id);
+    save('ledger.sideJobs', sideJobs);
+    renderSideJobs();
+  }
+});
+
+document.getElementById('pushSideJobs').addEventListener('click', ()=>{
+  const total = currentMonthSideJobs().reduce((s,j)=>s+j.amount, 0);
+  if(total <= 0) return;
+  transactions.push({id: Date.now(), type:'income', amount: total, category:'Подработки', date: todayStr()});
+  save('ledger.transactions', transactions);
+  renderFinance();
+  document.querySelector('[data-tab="finance"]').click();
+});
+
 // --- Calendar ---
 const monthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 function latestOrToday(){
-  if(workDays.length){
-    const latest = workDays.slice().sort((a,b)=> a.date < b.date ? 1 : -1)[0].date;
-    const [y,m] = latest.split('-').map(Number);
-    return {year:y, month:m-1};
-  }
   const t = new Date();
   return {year:t.getFullYear(), month:t.getMonth()};
 }
@@ -803,6 +881,34 @@ renderRecurring();
 // --- Archive ---
 let archive = load('ledger.archive', []);
 
+function buildArchiveEntry(key, actual){
+  const [y,m] = key.split('-').map(Number);
+  const items = workDays.filter(d=>d.date.startsWith(key));
+  const hours = items.reduce((s,d)=>s+d.hours, 0);
+  const totalAccrued = hours * hourlyRate() + (settings.kpiEnabled ? settings.kpi : 0);
+  const sideTotal = sideJobs.filter(j=>j.date.startsWith(key)).reduce((s,j)=>s+j.amount, 0);
+  return {key, label: `${monthNames[m-1]} ${y}`, shifts: items.length, hours, totalAccrued, sideTotal, actual};
+}
+
+// Автоархив: прошедшие месяцы с данными сохраняются сами, текущий месяц начинается с нуля
+function autoArchivePastMonths(){
+  const currentKey = todayStr().slice(0,7);
+  const keys = new Set();
+  workDays.forEach(d=>keys.add(d.date.slice(0,7)));
+  sideJobs.forEach(j=>keys.add(j.date.slice(0,7)));
+  const pending = [...keys].filter(k=> k < currentKey && !archive.some(a=>a.key===k)).sort();
+  if(!pending.length) return;
+  pending.forEach((k,i)=>{
+    const isLast = i === pending.length - 1;
+    archive.push(buildArchiveEntry(k, isLast ? actualSalary : 0));
+  });
+  save('ledger.archive', archive);
+  advance = 0; actualSalary = 0;
+  save('ledger.advance', 0); save('ledger.actualSalary', 0);
+  document.getElementById('advanceAmount').value = '';
+  document.getElementById('actualSalary').value = '';
+}
+
 function renderArchive(){
   const tbody = document.querySelector('#archiveTable tbody');
   tbody.innerHTML = '';
@@ -810,6 +916,7 @@ function renderArchive(){
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${a.label}</td><td class="num">${a.shifts}</td><td class="num">${a.hours}</td>
       <td class="num">${money(a.totalAccrued)}</td>
+      <td class="num">${money(a.sideTotal || 0)}</td>
       <td class="num"><input type="number" class="archive-actual" data-key="${a.key}" min="0" step="1" value="${a.actual}"></td>
       <td><button class="del" data-key="${a.key}" title="Удалить">×</button></td>`;
     tbody.appendChild(tr);
@@ -838,12 +945,8 @@ document.querySelector('#archiveTable tbody').addEventListener('input', e=>{
 });
 
 document.getElementById('archiveMonth').addEventListener('click', ()=>{
-  const items = currentMonthWorkDays();
-  const hours = items.reduce((s,d)=>s+d.hours, 0);
-  const totalAccrued = hours * hourlyRate() + (settings.kpiEnabled ? settings.kpi : 0);
   const key = monthKeyPrefix();
-  const label = `${monthNames[calState.month]} ${calState.year}`;
-  const entry = {key, label, shifts: items.length, hours, totalAccrued, actual: actualSalary};
+  const entry = buildArchiveEntry(key, actualSalary);
   archive = archive.filter(a=>a.key!==key);
   archive.push(entry);
   save('ledger.archive', archive);
@@ -851,8 +954,9 @@ document.getElementById('archiveMonth').addEventListener('click', ()=>{
   document.querySelector('[data-tab="archive"]').click();
 });
 
+autoArchivePastMonths();
+renderSalary();
 renderArchive();
-
 
 document.getElementById('syncId').textContent = USER_ID;
 document.getElementById('syncHelpBtn').addEventListener('click', ()=>{
