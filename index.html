@@ -39,6 +39,8 @@
   .brand-name{line-height:1.15;}
   .brand-red{color:#D9433A;}
   .brand-white{color:var(--ink);}
+  .sync-box{margin-top:auto; padding:16px 22px; border-top:1px solid var(--line);}
+  .sync-label{display:block; font-size:11px; color:var(--muted); margin-bottom:8px;}
   .brand span{color:var(--gold);}
   nav.spine button{
     all:unset; cursor:pointer; padding:14px 22px; font-family:var(--font-body);
@@ -87,7 +89,13 @@
     font-weight:500; padding:8px 6px; border-bottom:1px solid var(--line);
   }
   th.num,td.num{text-align:right;}
-  td{padding:10px 6px; border-bottom:1px solid var(--line); font-size:14px;}
+  .archive-actual{
+    width:100px; text-align:right; background:transparent; border:1px solid transparent;
+    color:var(--gold); font-family:var(--font-mono); font-size:14px; padding:4px 6px; border-radius:3px;
+    font-variant-numeric:tabular-nums;
+  }
+  .archive-actual:hover,.archive-actual:focus{background:var(--surface); border-color:var(--line);}
+  td{padding:10px 6px; border-bottom:1px solid var(--line); font-size:14px; white-space:nowrap;}
   td.num{font-family:var(--font-mono); font-variant-numeric:tabular-nums;}
   td.income{color:var(--gold);} td.expense{color:var(--coral);}
   .del{all:unset; cursor:pointer; color:var(--muted); font-size:16px; line-height:1; padding:2px 6px;}
@@ -109,6 +117,7 @@
   .cal-day.empty-cell{visibility:hidden; cursor:default;}
   .cal-day small{display:block; font-size:10px; opacity:0.8; margin-top:2px;}
   .cal-editor{display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding-top:12px; border-top:1px solid var(--line); font-size:13px; color:var(--muted);}
+  .cal-summary{font-size:13px; color:var(--muted); padding:12px 0 14px; font-family:var(--font-mono); font-variant-numeric:tabular-nums;}
   .date-field{position:relative;}
   .date-btn{
     all:unset; box-sizing:border-box; display:block; width:100%; cursor:pointer;
@@ -138,6 +147,7 @@
     .brand-logo{width:28px; height:28px;}
     nav.spine button{padding:8px 14px; border-left:none; border-bottom:2px solid transparent;}
     nav.spine button.active{border-bottom-color:var(--gold); border-left-color:transparent;}
+    .sync-box{flex:1 1 100%; margin-top:4px; padding:10px 4px 0; border-top:none; display:flex; align-items:center; justify-content:space-between;}
     main{padding:24px 18px;}
   }
 </style>
@@ -151,6 +161,11 @@
     </div>
     <button data-tab="salary" class="active">Зарплата</button>
     <button data-tab="finance">Финансы</button>
+    <button data-tab="archive">Архив</button>
+    <div class="sync-box">
+      <span class="sync-label">Персональная ссылка</span>
+      <button class="btn secondary" id="copySyncLink" style="font-size:11px; padding:6px 10px;">Скопировать</button>
+    </div>
   </nav>
   <main>
 
@@ -190,6 +205,8 @@
           <button class="btn" id="calSave" disabled>Сохранить</button>
           <button class="btn secondary" id="calRemove" disabled>Убрать</button>
         </div>
+        <div class="cal-summary" id="calSummary">Смен: 0 · Часов: 0</div>
+        <button class="btn secondary" id="archiveMonth">Сохранить итог месяца в архив</button>
       </fieldset>
 
       <div class="total-line">
@@ -289,6 +306,18 @@
       </fieldset>
     </section>
 
+    <section id="tab-archive" style="display:none;">
+      <h1>Архив</h1>
+      <p class="sub">Сохранённые итоги по месяцам: смены, часы и суммы к получению.</p>
+      <div class="overflow">
+        <table id="archiveTable">
+          <thead><tr><th>Месяц</th><th class="num">Смен</th><th class="num">Часов</th><th class="num">Итого с KPI</th><th class="num">Факт получено</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="empty" id="archiveEmpty">Пока нет сохранённых месяцев.</p>
+    </section>
+
   </main>
 </div>
 
@@ -296,38 +325,66 @@
 const money = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Math.round(n)) + ' ₽';
 const todayStr = () => new Date().toISOString().slice(0,10);
 
+// --- Cloud sync (Google Таблица через Apps Script) ---
+const CLOUD_SYNC_URL = 'https://script.google.com/macros/s/AKfycbyHUX1CP8jgrgvDqCz1DAeR1oMPlSR8gVtEg_FLlfRdImtifHSZjhLOCNkZRCbV_x0q/exec';
+
+function getUserId(){
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get('uid');
+  if(fromUrl){ localStorage.setItem('ledger.userId', fromUrl); return fromUrl; }
+  let id = localStorage.getItem('ledger.userId');
+  if(!id){ id = 'u_' + Math.random().toString(36).slice(2,10); localStorage.setItem('ledger.userId', id); }
+  return id;
+}
+const USER_ID = getUserId();
+const cloudReady = () => CLOUD_SYNC_URL && CLOUD_SYNC_URL.indexOf('PASTE') === -1;
+
+function gatherAllLedgerData(){
+  const out = {};
+  for(let i=0; i<localStorage.length; i++){
+    const k = localStorage.key(i);
+    if(k && k.startsWith('ledger.') && k !== 'ledger.userId'){
+      try{ out[k] = JSON.parse(localStorage.getItem(k)); }catch(e){ out[k] = localStorage.getItem(k); }
+    }
+  }
+  return out;
+}
+
+let cloudSyncTimer = null;
+function scheduleCloudSync(){
+  if(!cloudReady()) return;
+  clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(()=>{
+    fetch(CLOUD_SYNC_URL, { method:'POST', body: JSON.stringify({ userId: USER_ID, data: gatherAllLedgerData() }) }).catch(()=>{});
+  }, 1200);
+}
+
+async function cloudPullOnce(){
+  if(!cloudReady()) return;
+  if(sessionStorage.getItem('ledger.cloudPulled')) return;
+  try{
+    const res = await fetch(`${CLOUD_SYNC_URL}?userId=${encodeURIComponent(USER_ID)}`);
+    const json = await res.json();
+    sessionStorage.setItem('ledger.cloudPulled', '1');
+    if(json && json.data){
+      Object.keys(json.data).forEach(k=>{ localStorage.setItem(k, JSON.stringify(json.data[k])); });
+      location.reload();
+    }
+  }catch(e){}
+}
+cloudPullOnce();
+
 function load(key, fallback){
   try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
   catch(e){ return fallback; }
 }
 function save(key, val){
-  try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){}
+  try{ localStorage.setItem(key, JSON.stringify(val)); scheduleCloudSync(); }catch(e){}
 }
 
-let settings = load('ledger.salarySettings', {dailyRate:5250, baseHours:11, kpi:10000, kpiEnabled:true});
-const seedWorkDays = [
-  {id:1, date:'2026-09-01', hours:9},
-  {id:2, date:'2026-09-02', hours:11},
-  {id:3, date:'2026-09-04', hours:11},
-  {id:4, date:'2026-09-05', hours:11},
-  {id:5, date:'2026-09-08', hours:11},
-  {id:6, date:'2026-09-09', hours:11},
-  {id:7, date:'2026-09-12', hours:11},
-  {id:8, date:'2026-09-13', hours:11},
-  {id:9, date:'2026-09-16', hours:11},
-  {id:10, date:'2026-09-17', hours:11},
-  {id:11, date:'2026-09-20', hours:11},
-  {id:12, date:'2026-09-21', hours:11},
-  {id:13, date:'2026-09-24', hours:11},
-  {id:14, date:'2026-09-25', hours:11},
-  {id:15, date:'2026-09-28', hours:11},
-  {id:16, date:'2026-09-29', hours:11}
-];
-let workDays = load('ledger.workDays', null);
-if (!Array.isArray(workDays) || workDays.length === 0){
-  workDays = seedWorkDays;
-  save('ledger.workDays', workDays);
-}
+let settings = load('ledger.salarySettings', {dailyRate:0, baseHours:0, kpi:0, kpiEnabled:true});
+let workDays = load('ledger.workDays', []);
+if (!Array.isArray(workDays)) workDays = [];
 let transactions = load('ledger.transactions', []);
 
 // --- Tabs ---
@@ -337,6 +394,7 @@ document.querySelectorAll('nav.spine button').forEach(btn=>{
     btn.classList.add('active');
     document.getElementById('tab-salary').style.display = btn.dataset.tab==='salary' ? '' : 'none';
     document.getElementById('tab-finance').style.display = btn.dataset.tab==='finance' ? '' : 'none';
+    document.getElementById('tab-archive').style.display = btn.dataset.tab==='archive' ? '' : 'none';
   });
 });
 
@@ -346,9 +404,9 @@ const baseHoursEl = document.getElementById('baseHours');
 const kpiAmountEl = document.getElementById('kpiAmount');
 const kpiEnabledEl = document.getElementById('kpiEnabled');
 
-dailyRateEl.value = settings.dailyRate;
-baseHoursEl.value = settings.baseHours;
-kpiAmountEl.value = settings.kpi;
+dailyRateEl.value = settings.dailyRate || '';
+baseHoursEl.value = settings.baseHours || '';
+kpiAmountEl.value = settings.kpi || '';
 kpiEnabledEl.checked = settings.kpiEnabled;
 
 function hourlyRate(){ return settings.baseHours > 0 ? settings.dailyRate / settings.baseHours : 0; }
@@ -391,7 +449,7 @@ document.getElementById('actualSalary').addEventListener('input', ()=>{
 function renderSalary(){
   document.getElementById('hourlyRateOut').textContent = money(hourlyRate()) + ' / ч';
   let sum = 0;
-  workDays.forEach(d=>{ sum += hourlyRate() * d.hours; });
+  currentMonthWorkDays().forEach(d=>{ sum += hourlyRate() * d.hours; });
   const total = sum + (settings.kpiEnabled ? settings.kpi : 0);
   document.getElementById('salaryTotal').textContent = money(total);
   renderSalary.lastTotal = total;
@@ -435,6 +493,19 @@ function fmtDate(d){
   return d.split('-').reverse().join('.');
 }
 
+function monthKeyPrefix(){
+  return `${calState.year}-${String(calState.month+1).padStart(2,'0')}`;
+}
+function currentMonthWorkDays(){
+  const prefix = monthKeyPrefix();
+  return workDays.filter(d=>d.date.startsWith(prefix));
+}
+function updateCalSummary(){
+  const items = currentMonthWorkDays();
+  const hours = items.reduce((s,d)=>s+d.hours, 0);
+  document.getElementById('calSummary').textContent = `Смен: ${items.length} · Часов: ${hours}`;
+}
+
 function renderCalendar(){
   document.getElementById('calLabel').textContent = `${monthNames[calState.month]} ${calState.year}`;
   const grid = document.getElementById('calGrid');
@@ -456,15 +527,16 @@ function renderCalendar(){
     btn.innerHTML = String(day) + (entry ? `<small>${entry.hours}ч</small>` : '');
     grid.appendChild(btn);
   }
+  updateCalSummary();
 }
 
 document.getElementById('calPrev').addEventListener('click', ()=>{
   calState.month--; if(calState.month<0){ calState.month=11; calState.year--; }
-  renderCalendar();
+  renderSalary();
 });
 document.getElementById('calNext').addEventListener('click', ()=>{
   calState.month++; if(calState.month>11){ calState.month=0; calState.year++; }
-  renderCalendar();
+  renderSalary();
 });
 
 document.getElementById('calGrid').addEventListener('click', e=>{
@@ -475,7 +547,7 @@ document.getElementById('calGrid').addEventListener('click', e=>{
   document.getElementById('calEditorDate').textContent = fmtDate(selectedDate);
   const hoursInput = document.getElementById('calEditorHours');
   hoursInput.disabled = false;
-  hoursInput.value = entry ? entry.hours : settings.baseHours;
+  hoursInput.value = entry ? entry.hours : (settings.baseHours || '');
   document.getElementById('calSave').disabled = false;
   document.getElementById('calRemove').disabled = !entry;
   renderCalendar();
@@ -633,22 +705,8 @@ document.querySelector('#txTable tbody').addEventListener('click', e=>{
 });
 
 // --- Recurring monthly expenses ---
-const seedRecurring = [
-  {id:1, category:'Банки', name:'Сбер', day:13, amount:18750},
-  {id:2, category:'Банки', name:'Сбер', day:15, amount:4325},
-  {id:3, category:'Банки', name:'Сбер', day:30, amount:4420},
-  {id:4, category:'Банки', name:'ОТП у папы', day:15, amount:15000},
-  {id:5, category:'Банки', name:'Кредитка Сбер', day:30, amount:4200},
-  {id:6, category:'Домашние', name:'Коммуналка', day:15, amount:15000},
-  {id:7, category:'Домашние', name:'Продукты', day:15, amount:10000},
-  {id:8, category:'Домашние', name:'Продукты', day:30, amount:10000},
-  {id:9, category:'Домашние', name:'Фонд Бэбика', day:0, amount:5000}
-];
-let recurringExpenses = load('ledger.recurringExpenses', null);
-if(!Array.isArray(recurringExpenses) || recurringExpenses.length === 0){
-  recurringExpenses = seedRecurring;
-  save('ledger.recurringExpenses', recurringExpenses);
-}
+let recurringExpenses = load('ledger.recurringExpenses', []);
+if(!Array.isArray(recurringExpenses)) recurringExpenses = [];
 
 function renderRecurring(){
   const container = document.getElementById('recurringGroups');
@@ -727,6 +785,72 @@ document.getElementById('addRecurring').addEventListener('click', ()=>{
 renderSalary();
 renderFinance();
 renderRecurring();
+
+// --- Archive ---
+let archive = load('ledger.archive', []);
+
+function renderArchive(){
+  const tbody = document.querySelector('#archiveTable tbody');
+  tbody.innerHTML = '';
+  archive.slice().sort((a,b)=> a.key < b.key ? 1 : -1).forEach(a=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${a.label}</td><td class="num">${a.shifts}</td><td class="num">${a.hours}</td>
+      <td class="num">${money(a.totalAccrued)}</td>
+      <td class="num"><input type="number" class="archive-actual" data-key="${a.key}" min="0" step="1" value="${a.actual}"></td>
+      <td><button class="del" data-key="${a.key}" title="Удалить">×</button></td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('archiveEmpty').style.display = archive.length ? 'none' : '';
+  document.getElementById('archiveTable').style.display = archive.length ? '' : 'none';
+}
+
+document.querySelector('#archiveTable tbody').addEventListener('click', e=>{
+  if(e.target.classList.contains('del')){
+    const key = e.target.dataset.key;
+    archive = archive.filter(a=>a.key!==key);
+    save('ledger.archive', archive);
+    renderArchive();
+  }
+});
+
+document.querySelector('#archiveTable tbody').addEventListener('input', e=>{
+  if(e.target.classList.contains('archive-actual')){
+    const key = e.target.dataset.key;
+    const entry = archive.find(a=>a.key===key);
+    if(!entry) return;
+    entry.actual = parseFloat(e.target.value) || 0;
+    save('ledger.archive', archive);
+  }
+});
+
+document.getElementById('archiveMonth').addEventListener('click', ()=>{
+  const items = currentMonthWorkDays();
+  const hours = items.reduce((s,d)=>s+d.hours, 0);
+  const totalAccrued = hours * hourlyRate() + (settings.kpiEnabled ? settings.kpi : 0);
+  const key = monthKeyPrefix();
+  const label = `${monthNames[calState.month]} ${calState.year}`;
+  const entry = {key, label, shifts: items.length, hours, totalAccrued, actual: actualSalary};
+  archive = archive.filter(a=>a.key!==key);
+  archive.push(entry);
+  save('ledger.archive', archive);
+  renderArchive();
+  document.querySelector('[data-tab="archive"]').click();
+});
+
+renderArchive();
+
+document.getElementById('copySyncLink').addEventListener('click', async ()=>{
+  const url = `${location.origin}${location.pathname}?uid=${encodeURIComponent(USER_ID)}`;
+  try{
+    await navigator.clipboard.writeText(url);
+    const btn = document.getElementById('copySyncLink');
+    const old = btn.textContent;
+    btn.textContent = 'Скопировано!';
+    setTimeout(()=>{ btn.textContent = old; }, 1500);
+  }catch(e){
+    prompt('Скопируйте ссылку вручную:', url);
+  }
+});
 </script>
 </body>
 </html>
